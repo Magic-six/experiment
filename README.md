@@ -94,7 +94,6 @@ python latency_experiment.py
 1. 克隆项目代码：
 ```bash
 git clone [仓库URL]
-cd lagrange/experiment
 ```
 
 2. 安装依赖库：
