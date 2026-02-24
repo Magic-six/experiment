@@ -46,6 +46,8 @@ experiment/
 │
 ├── logs/                    # 日志目录
 ├── network_test_results/    # 实验结果目录
+├── benchmarks/              # 基准测试代码
+│   └── LagrangeInterpolation.mpc  # MP-SPDZ对比代码
 ├── main.py                  # 基础版本入口
 ├── main_optimized.py        # 优化版本入口（推荐）
 ├── latency_experiment.py    # 网络延迟实验
@@ -130,6 +132,34 @@ python communication/generate_certs.py
 - 原始数据: `network_test_results/latency_experiment/latency_comparison_results.json`
 - 性能对比图表: `network_test_results/latency_experiment/*.png`
 - 运行日志: `logs/latency_experiment.log` 或 `logs/lagrange_protocol.log`
+
+## 与 MP-SPDZ 对比
+
+项目提供了 MP-SPDZ 基准测试代码 `benchmarks/LagrangeInterpolation.mpc`，用于通信量对比实验。
+
+### 使用方法
+
+1. 将文件复制到 MP-SPDZ 目录：
+```bash
+cp benchmarks/LagrangeInterpolation.mpc /path/to/MP-SPDZ/Programs/Source/
+```
+
+2. 编译并运行：
+```bash
+cd /path/to/MP-SPDZ
+./compile.py LagrangeInterpolation
+./Scripts/semi.sh LagrangeInterpolation    # Semi协议
+./Scripts/hemi.sh LagrangeInterpolation    # Hemi协议
+./Scripts/shamir.sh LagrangeInterpolation  # Shamir协议
+```
+
+### 通信量对比结果（示例）
+
+| 参与方数 | 本协议 | MP-SPDZ (Semi) | MP-SPDZ (Shamir) |
+|---------|-------|----------------|------------------|
+| 3 | ~KB | 0.21 MB | 0.08 MB |
+| 13 | ~KB | 33.3 MB | 53.5 MB |
+| 28 | ~KB | 363.3 MB | 1249.7 MB |
 
 ## 技术特点
 

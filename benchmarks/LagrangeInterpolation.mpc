@@ -1,0 +1,46 @@
+"""
+MP-SPDZ 拉格朗日插值基准测试代码
+
+用于与本项目进行通信量和性能对比。
+使用方法：将此文件复制到 MP-SPDZ/Programs/Source/ 目录下，然后编译运行。
+
+编译: ./compile.py LagrangeInterpolation
+运行: ./Scripts/semi.sh LagrangeInterpolation (或 hemi.sh, shamir.sh)
+"""
+
+from Compiler.library import *
+
+# 动态获取参与方数量，方便脚本自动化传入 3, 8, 13 等参数
+n_parties = int(program.args[1]) if len(program.args) > 1 else 3
+x_interpolate = 7
+
+# Read coordinates
+coordinates = []
+
+def input_tuple(p):
+    x = sfix.get_input_from(p)
+    y = sfix.get_input_from(p)
+    return x, y
+
+for i in range(n_parties):
+    x_i, y_i = input_tuple(i)
+    coordinates.append((x_i, y_i))
+
+print_ln("Inputs are read.")
+
+# 初始化插值结果
+lagrange_result = sfix(0)
+
+# 拉格朗日插值计算
+for i in range(n_parties):
+    # 计算基础多项式
+    term = sfix(1)
+    for j in range(n_parties):
+        if i != j:
+            # (x - xj) / (xi - xj)
+            term *= (x_interpolate - coordinates[j][0]) / (coordinates[i][0] - coordinates[j][0])
+
+    # 加权纵坐标
+    lagrange_result += term * coordinates[i][1]
+
+print_ln("Interpolated value at x=%s is %s", x_interpolate, lagrange_result.reveal())
