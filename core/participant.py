@@ -89,15 +89,18 @@ class Participant:
             data=data_to_send
         )
     
-    async def recv_values(self, expected_count: int, wait_sec: float = 2.0) -> List[int]:
+    async def recv_values(self, expected_count: int, wait_sec: float = None) -> List[int]:
         """
         异步接收指定数量的值
         
         Args:
             expected_count: 期望接收的消息数量
-            wait_sec: 超时时间（秒）
+            wait_sec: 超时时间（秒），None时根据TLS状态自动设置
             
         Returns:
             包含接收到的整数值的列表
         """
+        # TLS连接需要更长的等待时间
+        if wait_sec is None:
+            wait_sec = 15.0 if self.comm.use_tls else 5.0
         return await self.comm.recv_values(expected_count, wait_sec)

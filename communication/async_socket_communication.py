@@ -1,23 +1,38 @@
 """
 异步Socket通信模块 - 实现基于asyncio的网络通信
+支持TLS加密通信
 """
 
 import asyncio
 import logging
 import socket
+import ssl
+import os
 from typing import List, Dict, Optional
 import random
 
 # 不在这里配置日志，使用主程序的日志配置
 
+# 全局TLS开关，通过环境变量控制
+def is_tls_enabled() -> bool:
+    return os.environ.get('USE_TLS', 'false').lower() == 'true'
+
+# 获取证书路径
+def get_cert_paths():
+    cert_dir = os.path.dirname(os.path.abspath(__file__))
+    cert_path = os.path.join(cert_dir, "server.crt")
+    key_path = os.path.join(cert_dir, "server.key")
+    return cert_path, key_path
+
 class AsyncSocketCommunication:
-    def __init__(self, name: str, port: int = 0, host: str = '127.0.0.1', max_bandwidth: Optional[int] = None):
+    def __init__(self, name: str, port: int = 0, host: str = '127.0.0.1', max_bandwidth: Optional[int] = None, use_tls: bool = None):
         """
         异步Socket通信模块初始化
         :param name: 实例名称（用于标识不同通信节点）
         :param port: 本地监听端口，0表示动态分配
         :param host: 本地绑定地址（默认本地环回）
         :param max_bandwidth: 最大发送带宽（字节/秒），None表示无限制
+        :param use_tls: 是否使用TLS加密，None表示使用环境变量控制
         """
         # 初始化日志记录器
         self.logger = logging.getLogger(f"AsyncSocketCommunication[{name}]")
@@ -27,6 +42,18 @@ class AsyncSocketCommunication:
         self.port = port
         self.host = host
         self.max_bandwidth = max_bandwidth
+        
+        # TLS配置
+        if use_tls is None:
+            self.use_tls = is_tls_enabled()
+        else:
+            self.use_tls = use_tls
+        
+        # 初始化SSL上下文
+        self.server_ssl_context = None
+        self.client_ssl_context = None
+        if self.use_tls:
+            self._setup_ssl_contexts()
         
         # 接收数据存储
         self.received_data: List[str] = []
@@ -45,17 +72,43 @@ class AsyncSocketCommunication:
         self.recv_data_size = 0
         self.send_rounds = 0
         self.recv_rounds = 0
+        self.tls_handshake_count = 0  # TLS握手次数
         self.stats_lock = asyncio.Lock()
         self.data_lock = asyncio.Lock()
         
         # 添加数据到达事件，避免轮询导致的死锁问题
         self.data_available = asyncio.Event()
     
+    def _setup_ssl_contexts(self):
+        """初始化SSL上下文"""
+        cert_path, key_path = get_cert_paths()
+        
+        # 检查证书文件是否存在
+        if not os.path.exists(cert_path) or not os.path.exists(key_path):
+            self.logger.warning(f"TLS证书文件不存在，禁用TLS: {cert_path}, {key_path}")
+            self.use_tls = False
+            return
+        
+        # 服务器SSL上下文
+        self.server_ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.server_ssl_context.load_cert_chain(cert_path, key_path)
+        
+        # 客户端SSL上下文（自签名证书需要禁用验证）
+        self.client_ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.client_ssl_context.check_hostname = False
+        self.client_ssl_context.verify_mode = ssl.CERT_NONE
+        
+        self.logger.info(f"TLS已启用，使用证书: {cert_path}")
+    
     async def start(self):
-        """启动异步服务器"""
+        """启动异步服务器（支持TLS）"""
         try:
+            # 根据TLS配置选择是否使用SSL
+            ssl_context = self.server_ssl_context if self.use_tls else None
+            
             self.server = await asyncio.start_server(
-                self.handle_client, self.host, self.port
+                self.handle_client, self.host, self.port,
+                ssl=ssl_context
             )
             
             # 获取实际绑定的端口（如果是动态分配）
@@ -65,7 +118,8 @@ class AsyncSocketCommunication:
                 self.logger.info(f"动态分配端口: {self.port}")
             
             self.is_running = True
-            self.logger.info(f"异步服务器监听中 {addr[0]}:{addr[1]}...")
+            tls_status = "TLS加密" if self.use_tls else "明文"
+            self.logger.info(f"异步服务器监听中 {addr[0]}:{addr[1]} ({tls_status})...")
             
             # 启动服务器任务
             self.server_task = asyncio.create_task(self.server.serve_forever())
@@ -155,15 +209,42 @@ class AsyncSocketCommunication:
             if conn_key in self.connections and not self.connections[conn_key].is_closing():
                 return self.connections[conn_key]
             
-            # 创建新连接
-            try:
-                reader, writer = await asyncio.open_connection(target_ip, target_port)
-                self.connections[conn_key] = writer
-                self.logger.info(f"建立连接到 {target_ip}:{target_port}")
-                return writer
-            except Exception as e:
-                self.logger.error(f"连接到 {target_ip}:{target_port} 失败: {e}")
-                raise
+            # 创建新连接（支持TLS，带超时和重试）
+            ssl_context = self.client_ssl_context if self.use_tls else None
+            connect_timeout = 30.0 if self.use_tls else 10.0  # TLS需要更长超时
+            max_connect_retries = 3
+            
+            for retry in range(max_connect_retries):
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(
+                            target_ip, target_port,
+                            ssl=ssl_context
+                        ),
+                        timeout=connect_timeout
+                    )
+                    self.connections[conn_key] = writer
+                    
+                    # 统计TLS握手
+                    if self.use_tls:
+                        async with self.stats_lock:
+                            self.tls_handshake_count += 1
+                    
+                    tls_status = "TLS" if self.use_tls else "明文"
+                    self.logger.info(f"建立连接到 {target_ip}:{target_port} ({tls_status})")
+                    return writer
+                except asyncio.TimeoutError:
+                    self.logger.warning(f"连接到 {target_ip}:{target_port} 超时 (尝试 {retry+1}/{max_connect_retries})")
+                    if retry < max_connect_retries - 1:
+                        await asyncio.sleep(0.5 * (retry + 1))
+                    else:
+                        raise
+                except Exception as e:
+                    self.logger.error(f"连接到 {target_ip}:{target_port} 失败: {e}")
+                    if retry < max_connect_retries - 1:
+                        await asyncio.sleep(0.5 * (retry + 1))
+                    else:
+                        raise
     
     async def send_data(self, target_ip: str, target_port: int, data: str, retries: int = 3) -> int:
         """
@@ -450,7 +531,7 @@ class PortManager:
     """
     端口管理器，负责动态分配和释放端口
     """
-    def __init__(self, min_port: int = 6100, max_port: int = 6200):
+    def __init__(self, min_port: int = 6100, max_port: int = 7500):
         self.min_port = min_port
         self.max_port = max_port
         self.available_ports = set(range(min_port, max_port + 1))

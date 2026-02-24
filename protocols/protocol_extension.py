@@ -305,6 +305,15 @@ async def four_party_compute(
     send_rounds = P_i.comm.send_rounds + P_j.comm.send_rounds + P_k.comm.send_rounds + P_l.comm.send_rounds
     recv_rounds = P_i.comm.recv_rounds + P_j.comm.recv_rounds + P_k.comm.recv_rounds + P_l.comm.recv_rounds
     
+    # 估算TLS开销（如果启用TLS）
+    # TLS握手约2KB，每条消息额外约40字节（记录层头部+MAC+填充）
+    if P_i.comm.use_tls:
+        tls_handshakes = P_i.comm.tls_handshake_count + P_j.comm.tls_handshake_count + P_k.comm.tls_handshake_count + P_l.comm.tls_handshake_count
+        tls_handshake_overhead = tls_handshakes * 2048  # 每次握手约2KB
+        tls_record_overhead = (send_rounds + recv_rounds) * 40  # 每条消息约40字节开销
+        send_data_size += (tls_handshake_overhead // 2) + (tls_record_overhead // 2)
+        recv_data_size += (tls_handshake_overhead // 2) + (tls_record_overhead // 2)
+    
     # 如果使用了网络模拟，将数据写入环境变量供测试脚本使用
     if hasattr(P_i, 'network_condition'):
         os.environ['TOTAL_SEND_BYTES'] = str(send_data_size)
@@ -421,8 +430,24 @@ async def secure_lagrange_interpolation(
                         task_mapping[len(computation_tasks) - 1] = (i, triple)
         
         # 使用asyncio.gather并行执行所有计算任务
+        # 对于TLS模式，使用分批执行以避免过多并发连接
         logger.info(f"开始执行 {len(computation_tasks)} 个并行计算任务")
-        task_results = await asyncio.gather(*computation_tasks, return_exceptions=True)
+        
+        use_tls = os.environ.get('USE_TLS', 'false').lower() == 'true'
+        if use_tls and len(computation_tasks) > 50:
+            # TLS模式下分批执行，每批最多50个任务
+            batch_size = 50
+            task_results = []
+            for i in range(0, len(computation_tasks), batch_size):
+                batch = computation_tasks[i:i+batch_size]
+                logger.info(f"执行批次 {i//batch_size + 1}/{(len(computation_tasks) + batch_size - 1)//batch_size}")
+                batch_results = await asyncio.gather(*batch, return_exceptions=True)
+                task_results.extend(batch_results)
+                # 批次间短暂等待，让系统释放资源
+                if i + batch_size < len(computation_tasks):
+                    await asyncio.sleep(0.1)
+        else:
+            task_results = await asyncio.gather(*computation_tasks, return_exceptions=True)
         logger.info("并行计算完成，收集结果")
         
         # 处理计算结果
@@ -474,12 +499,11 @@ async def secure_lagrange_interpolation(
         logger.info(f"协议通信量：send={overall_send_data_size} 字节, recv={overall_recv_data_size} 字节")
         logger.info(f"协议通信轮次: Overall_Round = {overall_round}, all_send_rounds = {overall_send_round}，all_recv_rounds = {overall_recv_round}\n")
 
-        # 如果使用了网络模拟，将总结果写入环境变量
-        if 'USE_NETWORK_SIMULATION' in os.environ and os.environ['USE_NETWORK_SIMULATION'].lower() == 'true':
-            os.environ['TOTAL_SEND_BYTES'] = str(overall_send_data_size)
-            os.environ['TOTAL_RECV_BYTES'] = str(overall_recv_data_size)
-            os.environ['TOTAL_RUN_TIME'] = str(run_time)
-            os.environ['MAX_COMPUTE_TIME'] = str(max_compute_time)
+        # 将通信统计写入环境变量，供调用方读取
+        os.environ['TOTAL_SEND_BYTES'] = str(overall_send_data_size)
+        os.environ['TOTAL_RECV_BYTES'] = str(overall_recv_data_size)
+        os.environ['TOTAL_RUN_TIME'] = str(run_time)
+        os.environ['MAX_COMPUTE_TIME'] = str(max_compute_time)
 
         return y_star
         

@@ -22,7 +22,7 @@ from utils.config import DEFAULT_RECV_TIMEOUT
 from protocols.protocol_factory import create_participant
 
 # 创建端口管理器实例
-port_manager = PortManager(min_port=6100, max_port=6200)
+port_manager = PortManager(min_port=6100, max_port=7500)
 
 # 初始化logger
 logger = logging.getLogger('lagrange_protocol')
@@ -252,6 +252,15 @@ async def three_party_compute(
     recv_data_size = P_i.comm.recv_data_size + P_j.comm.recv_data_size + P_k.comm.recv_data_size
     send_rounds = P_i.comm.send_rounds + P_j.comm.send_rounds + P_k.comm.send_rounds
     recv_rounds = P_i.comm.recv_rounds + P_j.comm.recv_rounds + P_k.comm.recv_rounds
+    
+    # 估算TLS开销（如果启用TLS）
+    # TLS握手约2KB，每条消息额外约40字节（记录层头部+MAC+填充）
+    if P_i.comm.use_tls:
+        tls_handshakes = P_i.comm.tls_handshake_count + P_j.comm.tls_handshake_count + P_k.comm.tls_handshake_count
+        tls_handshake_overhead = tls_handshakes * 2048  # 每次握手约2KB
+        tls_record_overhead = (send_rounds + recv_rounds) * 40  # 每条消息约40字节开销
+        send_data_size += (tls_handshake_overhead // 2) + (tls_record_overhead // 2)
+        recv_data_size += (tls_handshake_overhead // 2) + (tls_record_overhead // 2)
     
     # 如果使用了网络模拟，将数据写入环境变量供测试脚本使用
     if hasattr(P_i, 'network_condition'):

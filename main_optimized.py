@@ -100,8 +100,12 @@ async def n_party_demo_run_optimized(party_num: Optional[int] = None, enable_log
         overall_end_time = time.perf_counter()
         run_time = overall_end_time - overall_start_time
         
-        # 只输出关键结果，减少IO开销
-        print(f"插值结果: y={y_star}, 运行时间: {run_time:.4f}秒")
+        # 从环境变量读取通信统计
+        send_bytes = os.environ.get('TOTAL_SEND_BYTES', '0')
+        recv_bytes = os.environ.get('TOTAL_RECV_BYTES', '0')
+        
+        # 输出关键结果：插值结果、运行时间、通信量
+        print(f"插值结果: y={y_star}, 运行时间: {run_time:.4f}秒, 通信量: send={send_bytes}字节, recv={recv_bytes}字节")
         
     except Exception as e:
         print(f"运行出错: {e}")
@@ -182,10 +186,24 @@ async def test_secure_lagrange_interpolation_fast() -> bool:
 def main() -> None:
     """
     优化版主函数 - 程序入口点
+    支持参数:
+        [party_num]  - 参与方数量
+        -v/--verbose - 启用详细日志
+        --tls        - 启用TLS加密通信
+        test         - 运行测试
+        benchmark    - 运行基准测试
     """
     try:
         # 减少初始化开销，只在需要时配置日志
         enable_detailed_logging = '--verbose' in sys.argv or '-v' in sys.argv
+        
+        # 检查是否启用TLS
+        use_tls = '--tls' in sys.argv
+        if use_tls:
+            os.environ['USE_TLS'] = 'true'
+            print("TLS加密通信已启用")
+        else:
+            os.environ['USE_TLS'] = 'false'
         
         if enable_detailed_logging:
             log_dir = os.path.join(os.path.dirname(__file__), "logs")
